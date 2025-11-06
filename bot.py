@@ -13,40 +13,61 @@ logger = logging.getLogger(__name__)
 # Токен бота будет браться из переменных окружения
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает все входящие сообщения и возвращает их обратно"""
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовые сообщения"""
     user = update.message.from_user
-    chat_id = update.message.chat_id
-    message_type = update.message.content_type
+    text = update.message.text
     
-    logger.info(f"Получено сообщение от {user.first_name} (ID: {user.id}) в чате {chat_id}, тип: {message_type}")
+    logger.info(f"Текст от {user.first_name}: {text}")
+    response_text = f"📝 Вы написали: {text}"
+    await update.message.reply_text(response_text)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает голосовые сообщения"""
+    user = update.message.from_user
+    voice = update.message.voice
     
-    # В зависимости от типа контента, обрабатываем по-разному
-    if message_type == 'text':
-        response_text = f"📝 Вы написали: {update.message.text}"
-        await update.message.reply_text(response_text)
+    logger.info(f"Голосовое сообщение от {user.first_name}, duration: {voice.duration} сек")
     
-    elif message_type == 'voice':
-        await update.message.reply_text("🎤 Вы отправили голосовое сообщение")
-        # Можно получить файл голосового сообщения
-        voice_file = await update.message.voice.get_file()
-        logger.info(f"Голосовое сообщение: {voice_file.file_path}")
+    # Получаем информацию о файле
+    voice_file = await voice.get_file()
+    logger.info(f"Файл голосового сообщения: {voice_file.file_path}")
     
-    elif message_type == 'audio':
-        await update.message.reply_text("🎵 Вы отправили аудио файл")
+    await update.message.reply_text("🎤 Вы отправили голосовое сообщение")
+
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает аудио файлы"""
+    user = update.message.from_user
+    audio = update.message.audio
     
-    elif message_type == 'video':
-        await update.message.reply_text("🎥 Вы отправили видео сообщение")
+    logger.info(f"Аудио файл от {user.first_name}, название: {audio.file_name}")
+    await update.message.reply_text("🎵 Вы отправили аудио файл")
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает видео сообщения"""
+    user = update.message.from_user
+    video = update.message.video
     
-    elif message_type == 'video_note':
-        await update.message.reply_text("📹 Вы отправили видео-заметку (круглое видео)")
+    logger.info(f"Видео от {user.first_name}, duration: {video.duration} сек")
+    await update.message.reply_text("🎥 Вы отправили видео сообщение")
+
+async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает видео-заметки (круглые видео)"""
+    user = update.message.from_user
+    video_note = update.message.video_note
     
-    else:
-        await update.message.reply_text(f"🤖 Я получил ваше сообщение типа: {message_type}")
+    logger.info(f"Видео-заметка от {user.first_name}, duration: {video_note.duration} сек")
+    await update.message.reply_text("📹 Вы отправили видео-заметку (круглое видео)")
+
+async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает неизвестные типы сообщений"""
+    user = update.message.from_user
+    logger.info(f"Неизвестный тип сообщения от {user.first_name}")
+    await update.message.reply_text("🤖 Я получил ваше сообщение, но пока не знаю, как его обработать")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает ошибки"""
-    logger.error(f"Ошибка при обработке сообщения: {context.error}")
+    logger.error(f"Ошибка при обработке сообщения: {context.error}", exc_info=True)
 
 def main():
     """Запуск бота"""
@@ -57,8 +78,13 @@ def main():
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавляем обработчик для всех типов сообщений
-    application.add_handler(MessageHandler(filters.ALL, handle_message))
+    # Добавляем обработчики для разных типов сообщений
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    application.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
+    application.add_handler(MessageHandler(filters.ALL, handle_unknown))
     
     # Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
