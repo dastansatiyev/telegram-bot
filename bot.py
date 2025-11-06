@@ -87,7 +87,7 @@ async def process_media_message(update: Update, media_type: str):
                 f"{ML_SERVER_URL}/process", 
                 files=files, 
                 data=data,
-                timeout=60  # Таймаут 60 секунд
+                timeout=300  # Таймаут 60 секунд
             )
             
             if response.status_code == 200:
