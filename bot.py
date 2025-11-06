@@ -1,5 +1,6 @@
 import os
 import logging
+import requests
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
@@ -10,8 +11,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Токен бота будет браться из переменных окружения
+# Конфигурация
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+ML_SERVER_URL = os.getenv('ML_SERVER_URL')  # URL для ML-сервера
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает текстовые сообщения"""
@@ -19,51 +21,104 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     logger.info(f"Текст от {user.first_name}: {text}")
+    
+    # Для текста просто возвращаем эхо
     response_text = f"📝 Вы написали: {text}"
     await update.message.reply_text(response_text)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает голосовые сообщения"""
-    user = update.message.from_user
-    voice = update.message.voice
-    
-    logger.info(f"Голосовое сообщение от {user.first_name}, duration: {voice.duration} сек")
-    
-    # Получаем информацию о файле
-    voice_file = await voice.get_file()
-    logger.info(f"Файл голосового сообщения: {voice_file.file_path}")
-    
-    await update.message.reply_text("🎤 Вы отправили голосовое сообщение")
+    await process_media_message(update, "voice")
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает аудио файлы"""
-    user = update.message.from_user
-    audio = update.message.audio
-    
-    logger.info(f"Аудио файл от {user.first_name}, название: {audio.file_name}")
-    await update.message.reply_text("🎵 Вы отправили аудио файл")
+    await process_media_message(update, "audio")
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает видео сообщения"""
-    user = update.message.from_user
-    video = update.message.video
-    
-    logger.info(f"Видео от {user.first_name}, duration: {video.duration} сек")
-    await update.message.reply_text("🎥 Вы отправили видео сообщение")
+    await process_media_message(update, "video")
 
 async def handle_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает видео-заметки (круглые видео)"""
-    user = update.message.from_user
-    video_note = update.message.video_note
-    
-    logger.info(f"Видео-заметка от {user.first_name}, duration: {video_note.duration} сек")
-    await update.message.reply_text("📹 Вы отправили видео-заметку (круглое видео)")
+    """Обрабатывает видео-заметки"""
+    await process_media_message(update, "video_note")
 
-async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает неизвестные типы сообщений"""
+async def process_media_message(update: Update, media_type: str):
+    """Общая функция обработки медиа-сообщений"""
     user = update.message.from_user
-    logger.info(f"Неизвестный тип сообщения от {user.first_name}")
-    await update.message.reply_text("🤖 Я получил ваше сообщение, но пока не знаю, как его обработать")
+    message = update.message
+    
+    # Проверяем, установлен ли ML_SERVER_URL
+    if not ML_SERVER_URL:
+        await message.reply_text("❌ ML-сервер не настроен. Сообщите администратору.")
+        logger.error("ML_SERVER_URL не установлен!")
+        return
+    
+    try:
+        # Отправляем статус "печатает..."
+        await update.message.chat.send_action(action="typing")
+        
+        # Получаем файл в зависимости от типа
+        if media_type == "voice":
+            file = await message.voice.get_file()
+        elif media_type == "audio":
+            file = await message.audio.get_file()
+        elif media_type == "video":
+            file = await message.video.get_file()
+        elif media_type == "video_note":
+            file = await message.video_note.get_file()
+        else:
+            await message.reply_text("❌ Неподдерживаемый тип медиа")
+            return
+
+        logger.info(f"Обработка {media_type} от {user.first_name}, file_id: {file.file_id}")
+        
+        # Скачиваем файл
+        file_path = f"/tmp/{file.file_id}.ogg"
+        await file.download_to_drive(file_path)
+        
+        # Отправляем на ML-сервер
+        with open(file_path, 'rb') as f:
+            files = {'file': (f'{file.file_id}.ogg', f, 'audio/ogg')}
+            data = {'media_type': media_type}
+            
+            logger.info(f"Отправка запроса на ML-сервер: {ML_SERVER_URL}/process")
+            
+            response = requests.post(
+                f"{ML_SERVER_URL}/process", 
+                files=files, 
+                data=data,
+                timeout=60  # Таймаут 60 секунд
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                response_text = result.get('summary', 'Ответ от сервера без текста')
+                await message.reply_text(response_text)
+                logger.info(f"✅ Успешная обработка, ответ: {response_text[:100]}...")
+            else:
+                logger.error(f"Ошибка ML-сервера: {response.status_code} - {response.text}")
+                await message.reply_text("❌ Ошибка при обработке аудио. Попробуйте позже.")
+                
+    except requests.exceptions.ConnectionError:
+        logger.error("Не удалось подключиться к ML-серверу")
+        await message.reply_text("🔌 ML-сервер недоступен. Проверьте подключение.")
+    except requests.exceptions.Timeout:
+        logger.error("Таймаут подключения к ML-серверу")
+        await message.reply_text("⏰ Таймаут при обработке. Попробуйте позже.")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Ошибка подключения к ML-серверу: {e}")
+        await message.reply_text("🔌 Ошибка подключения к ML-серверу.")
+    except Exception as e:
+        logger.error(f"Общая ошибка: {e}", exc_info=True)
+        await message.reply_text("❌ Произошла непредвиденная ошибка.")
+    finally:
+        # Удаляем временный файл
+        try:
+            if 'file_path' in locals():
+                os.remove(file_path)
+                logger.info("Временный файл удален")
+        except Exception as e:
+            logger.warning(f"Не удалось удалить временный файл: {e}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает ошибки"""
@@ -72,25 +127,29 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Запуск бота"""
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не установлен! Убедитесь, что переменная окружения BOT_TOKEN задана.")
+        logger.error("BOT_TOKEN не установлен!")
         return
     
-    # Создаем приложение
+    if not ML_SERVER_URL:
+        logger.warning("ML_SERVER_URL не установлен! Бот будет работать без ML-функционала")
+    
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавляем обработчики для разных типов сообщений
+    # Добавляем обработчики
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     application.add_handler(MessageHandler(filters.VIDEO, handle_video))
     application.add_handler(MessageHandler(filters.VIDEO_NOTE, handle_video_note))
-    application.add_handler(MessageHandler(filters.ALL, handle_unknown))
     
-    # Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
     
-    # Запускаем бота
-    logger.info("Бот запущен...")
+    logger.info("Бот запущен и готов к работе!")
+    if ML_SERVER_URL:
+        logger.info(f"ML-сервер: {ML_SERVER_URL}")
+    else:
+        logger.info("ML-сервер: не настроен")
+    
     application.run_polling()
 
 if __name__ == '__main__':
